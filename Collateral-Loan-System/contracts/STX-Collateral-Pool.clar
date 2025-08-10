@@ -345,49 +345,56 @@
 (define-public (execute-borrower-liquidation (vulnerable-borrower-address principal))
   (let (
     (liquidation-executor tx-sender)
+  )
+  ;; First validate that the address is eligible for liquidation
+  (asserts! (evaluate-liquidation-vulnerability vulnerable-borrower-address) 
+            (err ERR-LIQUIDATION-THRESHOLD-NOT-REACHED))
+  
+  ;; Now safely retrieve the account data since we know it exists and is vulnerable
+  (let (
     (vulnerable-account-data (unwrap! (get-individual-borrower-account vulnerable-borrower-address) 
                              (err ERR-BORROWING-POSITION-MISSING)))
     (seizable-collateral-amount (get locked-stx-collateral-amount vulnerable-account-data))
     (liquidatable-debt-amount (get outstanding-usd-loan-balance vulnerable-account-data))
   )
-  ;; Validate liquidation target has assets
-  (asserts! (> seizable-collateral-amount u0) (err ERR-TRANSACTION-AMOUNT-INVALID))
-  (asserts! (> liquidatable-debt-amount u0) (err ERR-TRANSACTION-AMOUNT-INVALID))
-  
-  ;; Verify liquidation threshold breach
-  (let (
-    (current-collateral-market-value (* seizable-collateral-amount (get-current-stx-market-price)))
-    (borrower-collateralization-ratio (/ (* current-collateral-market-value u100) liquidatable-debt-amount))
-  )
-    ;; Position must breach liquidation threshold
-    (asserts! (< borrower-collateralization-ratio automatic-liquidation-trigger-percentage) 
-              (err ERR-LIQUIDATION-THRESHOLD-NOT-REACHED))
+    ;; Validate liquidation target has assets
+    (asserts! (> seizable-collateral-amount u0) (err ERR-TRANSACTION-AMOUNT-INVALID))
+    (asserts! (> liquidatable-debt-amount u0) (err ERR-TRANSACTION-AMOUNT-INVALID))
     
-    ;; Liquidation executor covers outstanding debt
-    (try! (stx-transfer? liquidatable-debt-amount liquidation-executor (as-contract tx-sender)))
-    
-    ;; Liquidation executor receives collateral assets
-    (try! (as-contract (stx-transfer? seizable-collateral-amount 
-                                     (as-contract tx-sender) 
-                                     liquidation-executor)))
-    
-    ;; Clear liquidated borrower account
-    (map-set individual-borrower-accounts
-      { account-holder-address: vulnerable-borrower-address }
-      {
-        locked-stx-collateral-amount: u0,
-        outstanding-usd-loan-balance: u0,
-        account-last-activity-block: block-height
-      }
+    ;; Double-check liquidation threshold breach with current price
+    (let (
+      (current-collateral-market-value (* seizable-collateral-amount (get-current-stx-market-price)))
+      (borrower-collateralization-ratio (/ (* current-collateral-market-value u100) liquidatable-debt-amount))
     )
-    
-    ;; Update protocol aggregate accounting
-    (var-set aggregate-stx-collateral-balance 
-             (- (var-get aggregate-stx-collateral-balance) seizable-collateral-amount))
-    (var-set aggregate-usd-loan-obligations 
-             (- (var-get aggregate-usd-loan-obligations) liquidatable-debt-amount))
-    (ok true)
-  ))
+      ;; Position must breach liquidation threshold
+      (asserts! (< borrower-collateralization-ratio automatic-liquidation-trigger-percentage) 
+                (err ERR-LIQUIDATION-THRESHOLD-NOT-REACHED))
+      
+      ;; Liquidation executor covers outstanding debt
+      (try! (stx-transfer? liquidatable-debt-amount liquidation-executor (as-contract tx-sender)))
+      
+      ;; Liquidation executor receives collateral assets
+      (try! (as-contract (stx-transfer? seizable-collateral-amount 
+                                       (as-contract tx-sender) 
+                                       liquidation-executor)))
+      
+      ;; Clear liquidated borrower account
+      (map-set individual-borrower-accounts
+        { account-holder-address: vulnerable-borrower-address }
+        {
+          locked-stx-collateral-amount: u0,
+          outstanding-usd-loan-balance: u0,
+          account-last-activity-block: block-height
+        }
+      )
+      
+      ;; Update protocol aggregate accounting
+      (var-set aggregate-stx-collateral-balance 
+               (- (var-get aggregate-stx-collateral-balance) seizable-collateral-amount))
+      (var-set aggregate-usd-loan-obligations 
+               (- (var-get aggregate-usd-loan-obligations) liquidatable-debt-amount))
+      (ok true)
+    )))
 )
 
 ;; PROTOCOL GOVERNANCE CONTROLS
